@@ -597,6 +597,8 @@ def main():
     else:
         data_collator = None
 
+    # On XLA, model.to(device) replaces the Parameter objects, so move the model before building the optimizer.
+    model = model.to(training_args.device)
     # Initialize our Trainer model.base_model.model.classifier.parameters()
     head_params = list(map(id, model.base_model.model.classifier.parameters()))
     base_params = filter(lambda p: id(p) not in head_params, model.parameters())
