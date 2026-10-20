@@ -32,6 +32,10 @@ try:
         xm.xrt_world_size = xr.world_size
     if not hasattr(xm, "get_ordinal"):
         xm.get_ordinal = xr.global_ordinal
+    # The original runs fp32 matmuls at full precision on GPU (allow_tf32 is off by default); XLA's
+    # default precision on TPU is a single bf16 pass, so request full fp32 precision.
+    import torch_xla.backends
+    torch_xla.backends.set_mat_mul_precision("highest")
 except ImportError:
     pass
 
