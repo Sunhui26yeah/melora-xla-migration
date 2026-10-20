@@ -32,6 +32,10 @@ try:
         xm.xrt_world_size = xr.world_size
     if not hasattr(xm, "get_ordinal"):
         xm.get_ordinal = xr.global_ordinal
+    # The original runs fp32 matmuls at full precision on GPU (allow_tf32 is off by default); XLA's
+    # default precision on TPU is a single bf16 pass, so request full fp32 precision.
+    import torch_xla.backends
+    torch_xla.backends.set_mat_mul_precision("highest")
 except ImportError:
     pass
 
@@ -262,6 +266,27 @@ class ModelArguments:
 class PeftXLATrainer(Trainer):
     """transformers 4.31's `_save_tpu` only knows `PreTrainedModel`, so a `PeftModel` is saved as a bare
     pytorch_model.bin and `load_best_model_at_end` cannot find the adapter. Mirror the GPU `_save` path."""
+
+    def training_step(self, model, inputs):
+        # Batch 128 at fp32 matmul precision does not fit in 16 GB HBM, and accelerate 0.22 rejects
+        # gradient accumulation on TPU. Run the batch as two equal halves, each backpropagating half its
+        # mean loss, so the summed gradient equals the full-batch gradient; mark_step between halves
+        # executes them as separate programs.
+        n = inputs["labels"].shape[0]
+        if self.args.device.type != "xla" or n % 2:
+            return super().training_step(model, inputs)
+        import torch_xla.core.xla_model as xm
+        model.train()
+        inputs = self._prepare_inputs(inputs)
+        total = 0.0
+        for half in (slice(0, n // 2), slice(n // 2, n)):
+            part = {k: v[half] if torch.is_tensor(v) else v for k, v in inputs.items()}
+            with self.compute_loss_context_manager():
+                loss = self.compute_loss(model, part) / 2
+            self.accelerator.backward(loss)
+            total = total + loss.detach()
+            xm.mark_step()
+        return total
 
     def _save_tpu(self, output_dir: Optional[str] = None):
         if not isinstance(self.model, PeftModel):
