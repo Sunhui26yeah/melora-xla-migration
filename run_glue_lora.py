@@ -56,6 +56,7 @@ from transformers import (
     set_seed,
 )
 from peft import (
+    PeftModel,
     LoraConfig,
     MELoraConfig,
     AdaLoraConfig,
@@ -68,6 +69,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+from transformers.trainer import TRAINING_ARGS_NAME
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.29.0")
@@ -256,6 +258,27 @@ class ModelArguments:
         default=False,
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
+
+class PeftXLATrainer(Trainer):
+    """transformers 4.31's `_save_tpu` only knows `PreTrainedModel`, so a `PeftModel` is saved as a bare
+    pytorch_model.bin and `load_best_model_at_end` cannot find the adapter. Mirror the GPU `_save` path."""
+
+    def _save_tpu(self, output_dir: Optional[str] = None):
+        if not isinstance(self.model, PeftModel):
+            return super()._save_tpu(output_dir)
+        import torch_xla.core.xla_model as xm
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        logger.info(f"Saving model checkpoint to {output_dir}")
+        if xm.is_master_ordinal():
+            os.makedirs(output_dir, exist_ok=True)
+            torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
+        xm.rendezvous("saving_checkpoint")
+        if self.args.should_save:
+            state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            self.model.save_pretrained(output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -605,7 +628,7 @@ def main():
     optimizer = torch.optim.AdamW([{'params': base_params},
         {'params': model.base_model.model.classifier.parameters(), 'lr': training_args.learning_rate / 2}],
         lr=training_args.learning_rate)
-    trainer = Trainer(
+    trainer = PeftXLATrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
