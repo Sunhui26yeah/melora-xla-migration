@@ -1,5 +1,6 @@
 #!/bin/bash
 # usage: run_mrpc.sh <code_dir> <out_dir> [extra args...]
+# Global batch 128 = 64 x 2 gradient accumulation: batch 128 at fp32 matmul precision does not fit in 16 GB HBM.
 CODE=$1; OUT=$2; shift 2
 export WANDB_MODE=offline
 cd $CODE
@@ -7,7 +8,7 @@ mkdir -p $OUT
 python ./run_glue_lora.py \
   --model_name_or_path FacebookAI/roberta-base --task_name mrpc \
   --do_train --do_eval --max_seq_length 256 \
-  --per_device_train_batch_size 128 --per_device_eval_batch_size 128 \
+  --per_device_train_batch_size 64 --per_device_eval_batch_size 64 --gradient_accumulation_steps 2 \
   --load_best_model_at_end True --metric_for_best_model accuracy \
   --learning_rate 4e-4 --num_train_epochs 30 \
   --evaluation_strategy epoch --save_strategy epoch \
