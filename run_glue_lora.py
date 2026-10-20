@@ -23,6 +23,18 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# torch_xla >= 2.x (PJRT) removed xm.xrt_world_size / xm.get_ordinal, which
+# transformers 4.31 and accelerate 0.22 still call; alias them to torch_xla.runtime.
+try:
+    import torch_xla.core.xla_model as xm
+    import torch_xla.runtime as xr
+    if not hasattr(xm, "xrt_world_size"):
+        xm.xrt_world_size = xr.world_size
+    if not hasattr(xm, "get_ordinal"):
+        xm.get_ordinal = xr.global_ordinal
+except ImportError:
+    pass
+
 import datasets
 import evaluate
 import numpy as np
